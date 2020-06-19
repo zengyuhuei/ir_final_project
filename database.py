@@ -1,7 +1,7 @@
 import pymongo
 import configparser
 
-def get_db():
+def get_db(db_name = 'github'):
     config = configparser.ConfigParser()
     config.readfp(open(r'config.ini'))
     username = config.get('DATABASE', 'USERNAME')
@@ -9,19 +9,23 @@ def get_db():
     ip = config.get('DATABASE', 'IP')
     port = config.get('DATABASE', 'PORT')
     client = pymongo.MongoClient(f'mongodb://{username}:{password}@{ip}:{port}/')
-    db = client['github']
+    db = client[db_name]
     return db
-        
-def init_repos_to_db(repos):    
-    db = get_db()
-    repos_col = db['repos']
-    datas = [{'name': repo} for repo in repos]
-    x = repos_col.insert_many(datas)
-    print(len(x.inserted_ids))
 
-def update_repo(repo_name):
-    users = get_stargazer_from_repo(repo_name)
+def get_col(col_name):
     db = get_db()
-    repos_col = db['repos']
-    repos_col.update_one({'name': repos_col}, {'stargazers': users})
-    print(f'{repo_name} ... Update to db')
+    return db[col_name]
+
+def find_all(col_name):
+    col = get_col(col_name)
+    return list(col.find({}, {'_id': 0}))
+
+def insert_many(col_name, datas):
+    col = get_col(col_name)
+    x = col.insert_many(datas)
+    print(f'inserted {len(x.inserted_ids)} items')
+
+def update_one(col_name, target, data):
+    col = get_col(col_name)
+    col.update_one(target, {"$set": data})
+    print(f'updated to {col_name}...')
