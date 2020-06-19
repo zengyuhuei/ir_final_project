@@ -3,6 +3,8 @@ import json
 from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor
 from time import time
+from database import find_all, insert_many, update_one
+from proxy import proxy_get
 
 def parse_link(link):
     links = link.split(',')
@@ -22,7 +24,12 @@ def get_next_page(links):
 
 def get_user_starred_repo(user, page=1, per_page=100):
     print(f'crawling user {user}... page {page}...')
-    response = requests.get(f'https://api.github.com/users/{user}/starred?per_page={per_page}&page={page}')
+    #response = requests.get(f'https://api.github.com/users/{user}/starred?per_page={per_page}&page={page}')
+    response = proxy_get(f'https://api.github.com/users/{user}/starred?per_page={per_page}&page={page}')
+    # handle error
+    if response.status_code != 200:
+        print(f"[Error] code: {response.status_code}")
+        print(response.json())
     datas = response.json()
     # not only one page
     next_page = None
@@ -63,7 +70,7 @@ def get_stargazer_from_repo(repo_name):
 
 def get_top1000(mode):
     '''
-    params: mode = 'users' or 'repositories
+    params: mode = 'users' or 'repositories'
     '''
     base_url = f'https://gitstar-ranking.com/{mode}'
     repos = []
@@ -79,13 +86,40 @@ def get_top1000(mode):
         print(len(repos))
     return repos
 
+'''
 def concurrent_crawl_top_repos(max_workers):
-    db = get_db()
-    repos_col = db['repos']
-    repos = list(repos_col.find({}, {'_id': 0}))
+    repos = find_all('repos')
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         for repo in repos:
             executor.submit(get_stargazer_from_repo, repo['name'])
+'''
+
+def init_users_to_db(users):
+    datas = [{'name': user} for user in users]
+    insert_many('users', datas)
+
+def crawl_top_users():
+    users = find_all('users')
+    users = [user for user in users if len(user) == 1]
+    for i, user in enumerate(users):
+        print(f'crawling {i+1}/{len(users)}...')
+        repos = get_user_starred_repo(user['name'])
+        print(f"finish {user['name']} total: {len(repos)} update to db")
+        update_one('users', {'name': user['name']}, {'repos': repos})
+
+def insert_user_starred_repo(user):
+    repos = get_user_starred_repo(user['name'])
+    print(f"finish {user['name']} total: {len(repos)} update to db")
+    update_one('users', {'name': user['name']}, {'repos': repos})
+
+def concurrent_crawl_top_users(max_workers):
+    users = find_all('users')
+    users = [user for user in users if len(user) == 1]
+    print(f'crawl user num: {len(users)}......')
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        for i, user in enumerate(users):
+            #print(f'crawling {i+1}/{len(users)}...')
+            executor.submit(insert_user_starred_repo, user)
 
 if __name__ == '__main__':
     #repos = get_user_starred_repo('ysam12345')
@@ -97,6 +131,9 @@ if __name__ == '__main__':
         print(repos)
     '''
     #repos = get_top1000('repositories')
-    users = get_top1000('users')
+    #users = get_top1000('users')
+    #init_users_to_db(users)
     #insert_repos_to_db(repos)
     #concurrent_crawl_top_repos(1)
+    #crawl_top_users()
+    concurrent_crawl_top_users(100)
