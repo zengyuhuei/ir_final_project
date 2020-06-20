@@ -16,9 +16,9 @@ def get_col(col_name):
     db = get_db()
     return db[col_name]
 
-def find_all(col_name):
+def find_all(col_name, target={}, field_filter={'_id': 0}):
     col = get_col(col_name)
-    return list(col.find({}, {'_id': 0}))
+    return list(col.find(target, field_filter))
 
 def insert_many(col_name, datas):
     col = get_col(col_name)
@@ -27,5 +27,5 @@ def insert_many(col_name, datas):
 
 def update_one(col_name, target, data):
     col = get_col(col_name)
-    col.update_one(target, {"$set": data})
-    print(f'updated to {col_name}...')
+    x = col.update_one(target, {"$set": data})
+    print(f'updated to {col_name}... {len(x)} items')
