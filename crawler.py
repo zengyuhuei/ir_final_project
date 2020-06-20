@@ -5,6 +5,11 @@ from concurrent.futures import ThreadPoolExecutor
 from time import time
 from database import find_all, insert_many, update_one
 from proxy import proxy_get
+from copy import deepcopy
+import configparser
+
+
+headers = {'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/83.0.4103.97 Safari/537.36'}
 
 def parse_link(link):
     links = link.split(',')
@@ -22,10 +27,28 @@ def get_next_page(links):
             page = link[0].split('&page=')[1]
     return page
 
+def get_with_token(url):
+    config = configparser.ConfigParser()
+    config.readfp(open(r'config.ini'))
+    access_token = config.get('GITHUB', 'ACCESSTOKEN')
+    header_with_token = deepcopy(headers)
+    header_with_token['Authorization'] = f'token {access_token}'
+    res = requests.get(url, headers=header_with_token)
+    if res.status_code != 200:
+        print(f"ERROR status_code: {res.status_code}")
+        print(f"ERROR message: {res.text}")
+    if int(res.headers['X-RateLimit-Limit']) < 5000 or int(res.headers['X-RateLimit-Remaining']) == 0:
+        print(f"Limit Error, X-RateLimit-Limit: {res.headers['X-RateLimit-Limit']}, \
+                             X-RateLimit-Remaining: {res.headers['X-RateLimit-Remaining']}")
+    assert(int(res.headers['X-RateLimit-Limit']) >= 5000)
+    assert(int(res.headers['X-RateLimit-Remaining']) > 0)
+    return res
+
 def get_user_starred_repo(user, page=1, per_page=100):
     print(f'crawling user {user}... page {page}...')
     #response = requests.get(f'https://api.github.com/users/{user}/starred?per_page={per_page}&page={page}')
-    response = proxy_get(f'https://api.github.com/users/{user}/starred?per_page={per_page}&page={page}')
+    #response = proxy_get(f'https://api.github.com/users/{user}/starred?per_page={per_page}&page={page}')
+    response = get_with_token(f'https://api.github.com/users/{user}/starred?per_page={per_page}&page={page}')
     # handle error
     if response.status_code != 200:
         print(f"[Error] code: {response.status_code}")
@@ -73,7 +96,7 @@ def get_top1000(mode):
     params: mode = 'users' or 'repositories'
     '''
     base_url = f'https://gitstar-ranking.com/{mode}'
-    repos = []
+    datas = []
     for i in range(1, 11):
         url = base_url + f'?page={i}'
         response = requests.get(url)
@@ -82,9 +105,28 @@ def get_top1000(mode):
               soup.select('body > div.container > div.row > div:nth-child(2) > div')[0].find_all('a')
         
         for a in _as:
-            repos.append(a['href'][1:])
-        print(len(repos))
-    return repos
+            datas.append(a['href'][1:])
+        print(len(datas))
+    return datas
+
+def get_most_active_users():
+    '''
+    # get 256 users from commits.top website
+    '''
+    url = 'https://commits.top/worldwide.html'
+    users = []
+    response = requests.get(url)
+    soup = BeautifulSoup(response.text, 'html.parser')
+    trs = soup.select('table')[0].find_all('tr')
+    for tr in trs:
+        tds = tr.find_all('td')
+        # avoid table title
+        if len(tds) == 4:
+            username = tds[1].find('a').text
+            users.append(username)
+    print(len(users))
+    return users
+
 
 '''
 def concurrent_crawl_top_repos(max_workers):
@@ -95,8 +137,13 @@ def concurrent_crawl_top_repos(max_workers):
 '''
 
 def init_users_to_db(users):
-    datas = [{'name': user} for user in users]
-    insert_many('users', datas)
+    #datas = [{'name': user} for user in users]
+    users_in_db = find_all('users', field_filter={'_id': 0, 'repos': 0})
+    users_in_db = [user['name'] for user in users_in_db]
+    new_users = [user for user in users if user not in users_in_db]
+    print(f"{len(users) - len(new_users)} users already in db, insert {len(new_users)} users")
+    if len(new_users) > 0:
+        insert_many('users', new_users)
 
 def crawl_top_users():
     users = find_all('users')
@@ -131,9 +178,17 @@ if __name__ == '__main__':
         print(repos)
     '''
     #repos = get_top1000('repositories')
+    '''
+    get top 1000 users and insert to db
+    '''
     #users = get_top1000('users')
     #init_users_to_db(users)
+    '''
+    get most activate 256 users and insert to db
+    '''
+    users = get_most_active_users()
+    init_users_to_db(users)
     #insert_repos_to_db(repos)
     #concurrent_crawl_top_repos(1)
     #crawl_top_users()
-    concurrent_crawl_top_users(100)
+    #concurrent_crawl_top_users(2)
