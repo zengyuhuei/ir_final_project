@@ -2,7 +2,7 @@ import requests
 import json
 from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor
-from time import time
+from time import time, sleep
 from database import find_all, insert_many, update_one
 from proxy import proxy_get
 from copy import deepcopy
@@ -27,7 +27,7 @@ def get_next_page(links):
             page = link[0].split('&page=')[1]
     return page
 
-def get_with_token(url):
+def get_with_token(url, rate_limit=5000):
     config = configparser.ConfigParser()
     config.readfp(open(r'config.ini'))
     access_token = config.get('GITHUB', 'ACCESSTOKEN')
@@ -37,18 +37,25 @@ def get_with_token(url):
     if res.status_code != 200:
         print(f"ERROR status_code: {res.status_code}")
         print(f"ERROR message: {res.text}")
-    if int(res.headers['X-RateLimit-Limit']) < 5000 or int(res.headers['X-RateLimit-Remaining']) == 0:
+    if int(res.headers['X-RateLimit-Limit']) < rate_limit or int(res.headers['X-RateLimit-Remaining']) == 0:
         print(f"Limit Error, X-RateLimit-Limit: {res.headers['X-RateLimit-Limit']}, \
                              X-RateLimit-Remaining: {res.headers['X-RateLimit-Remaining']}")
-    assert(int(res.headers['X-RateLimit-Limit']) >= 5000)
+    assert(int(res.headers['X-RateLimit-Limit']) >= rate_limit)
     assert(int(res.headers['X-RateLimit-Remaining']) > 0)
     return res
 
-def get_user_starred_repo(user, page=1, per_page=100):
+def get_user_starred_repo(user, mode='token', page=1, per_page=30):
+    '''
+    mode: token(use GitHub access token), proxy(use proxy), normal(direct send request)
+    '''
     print(f'crawling user {user}... page {page}...')
-    #response = requests.get(f'https://api.github.com/users/{user}/starred?per_page={per_page}&page={page}')
-    #response = proxy_get(f'https://api.github.com/users/{user}/starred?per_page={per_page}&page={page}')
-    response = get_with_token(f'https://api.github.com/users/{user}/starred?per_page={per_page}&page={page}')
+    assert(mode in ['normal', 'proxy', 'token'])
+    if mode == 'normal':
+        response = requests.get(f'https://api.github.com/users/{user}/starred?per_page={per_page}&page={page}')
+    elif mode == 'proxy':
+        response = proxy_get(f'https://api.github.com/users/{user}/starred?per_page={per_page}&page={page}')
+    elif mode == 'token':
+        response = get_with_token(f'https://api.github.com/users/{user}/starred?per_page={per_page}&page={page}')
     # handle error
     if response.status_code != 200:
         print(f"[Error] code: {response.status_code}")
@@ -63,7 +70,7 @@ def get_user_starred_repo(user, page=1, per_page=100):
     for data in datas:
         repos.append(data['html_url'].replace('https://github.com/', ''))
     if next_page != None:
-        repos += get_user_starred_repo(user, next_page)
+        repos += get_user_starred_repo(user, mode, next_page)
     return repos 
 
 def get_stargazer_from_repo(repo_name):
@@ -136,6 +143,30 @@ def concurrent_crawl_top_repos(max_workers):
             executor.submit(get_stargazer_from_repo, repo['name'])
 '''
 
+def get_user_from_github(query='followers:>2500', page=1, per_page=100):
+    print(f'crawling user {query}... page {page}...')
+    users = []
+    response = get_with_token(f'https://api.github.com/search/users?q={query}&per_page={per_page}&page={page}', 30)
+    # handle error
+    if response.status_code != 200:
+        print(f"[Error] code: {response.status_code}")
+        print(response.json())
+    data = response.json()
+    # not only one page
+    next_page = None
+    if 'link' in response.headers:
+        links = parse_link((response.headers['link']))
+        next_page = get_next_page(links)
+    
+    for item in data['items']:
+        users.append(item['login'])
+    if next_page != None:
+        sleep_second = 2
+        print(f'total {data["total_count"]}, sleep for {sleep_second} seconds to avoid reach API limit')
+        sleep(sleep_second)
+        users += get_user_from_github(query, next_page)
+    return users 
+
 def init_users_to_db(users):
     #datas = [{'name': user} for user in users]
     users_in_db = find_all('users', field_filter={'_id': 0, 'repos': 0})
@@ -143,7 +174,7 @@ def init_users_to_db(users):
     new_users = [user for user in users if user not in users_in_db]
     print(f"{len(users) - len(new_users)} users already in db, insert {len(new_users)} users")
     if len(new_users) > 0:
-        insert_many('users', new_users)
+        insert_many('users', [{'name': user} for user in new_users])
 
 def crawl_top_users():
     users = find_all('users')
@@ -154,19 +185,19 @@ def crawl_top_users():
         print(f"finish {user['name']} total: {len(repos)} update to db")
         update_one('users', {'name': user['name']}, {'repos': repos})
 
-def insert_user_starred_repo(user):
-    repos = get_user_starred_repo(user['name'])
+def insert_user_starred_repo(user, mode='token'):
+    repos = get_user_starred_repo(user['name'], mode)
     print(f"finish {user['name']} total: {len(repos)} update to db")
     update_one('users', {'name': user['name']}, {'repos': repos})
 
-def concurrent_crawl_top_users(max_workers):
+def concurrent_crawl_repo_of_users(max_workers, mode='token'):
     users = find_all('users')
     users = [user for user in users if len(user) == 1]
     print(f'crawl user num: {len(users)}......')
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         for i, user in enumerate(users):
             #print(f'crawling {i+1}/{len(users)}...')
-            executor.submit(insert_user_starred_repo, user)
+            executor.submit(insert_user_starred_repo, user, mode)
 
 if __name__ == '__main__':
     #repos = get_user_starred_repo('ysam12345')
@@ -183,12 +214,25 @@ if __name__ == '__main__':
     '''
     #users = get_top1000('users')
     #init_users_to_db(users)
+
     '''
     get most activate 256 users and insert to db
     '''
-    users = get_most_active_users()
-    init_users_to_db(users)
+    #users = get_most_active_users()
+    #init_users_to_db(users)
+
+    '''
+    get users > 1000 followers
+    because of the GitHub API limit that can only query 1000 result,
+    we have to split our query to multiple query to retrive complete user list
+    follower > 2500: 715 users, 2500 > follower > 1500: 746 users, 1500 > follower > 1000: 870 users
+    '''
+    #users = get_user_from_github(query='followers:>2500')
+    #users += get_user_from_github(query='followers:1500..2500')
+    #users += get_user_from_github(query='followers:1000..1500')
+    #init_users_to_db(users)
+
     #insert_repos_to_db(repos)
-    #concurrent_crawl_top_repos(1)
+    #concurrent_crawl_repo_of_users(300, 'proxy')
     #crawl_top_users()
-    #concurrent_crawl_top_users(2)
+    concurrent_crawl_repo_of_users(1, 'token')
