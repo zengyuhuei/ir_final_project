@@ -60,6 +60,9 @@ def get_user_starred_repo(user, mode='token', page=1, per_page=30):
     if response.status_code != 200:
         print(f"[Error] code: {response.status_code}")
         print(response.json())
+    # handle not found
+    if response.status_code == 404:
+        return None
     datas = response.json()
     # not only one page
     next_page = None
@@ -72,6 +75,41 @@ def get_user_starred_repo(user, mode='token', page=1, per_page=30):
     if next_page != None:
         repos += get_user_starred_repo(user, mode, next_page)
     return repos 
+
+
+def get_repo_detail(repo_name, mode='token', retry=5):
+    '''
+    mode: token(use GitHub access token), proxy(use proxy), normal(direct send request)
+    '''
+    print(f'crawling repo {repo_name}...')
+    assert(mode in ['normal', 'proxy', 'token'])
+    if mode == 'normal':
+        response = requests.get(f'https://api.github.com/repos/{repo_name}')
+    elif mode == 'proxy':
+        response = proxy_get(f'https://api.github.com/repos/{repo_name}')
+    elif mode == 'token':
+        response = get_with_token(f'https://api.github.com/repos/{repo_name}')
+    # handle error
+    '''
+    if response.status_code != 200:
+        print(f"[Error] repo: {repo_name} code: {response.status_code}")
+        print(response.json())
+    if retry > 0:
+        return get_repo_detail(repo_name, mode='token', retry=retry-1)
+    else:
+        # handle not found
+        if response.status_code == 404:
+            return None
+        return response.json()
+    '''
+    if response.status_code != 200:
+        print(f"[Error] repo: {repo_name} code: {response.status_code}")
+        print(response.json())
+    if response.status_code == 404:
+        return None
+    return response.json()
+
+    
 
 def get_stargazer_from_repo(repo_name):
     start_time = time()
@@ -199,6 +237,26 @@ def concurrent_crawl_repo_of_users(max_workers, mode='token'):
             #print(f'crawling {i+1}/{len(users)}...')
             executor.submit(insert_user_starred_repo, user, mode)
 
+def concurrent_crawl_top1000_repo_details(max_workers, mode='token'):
+    repos = find_all('top1000_repos')
+    exist_repos = find_all('top1000_repos_detail', field_filter={'_id': 0, 'full_name': 1})
+    exist_repo_names = [exist_repo['full_name'].lower() for exist_repo in exist_repos]
+    repo_names = [repo['name'] for repo in repos if repo['name'].lower() not in exist_repo_names]
+    print(len(repo_names))
+    #print(repo_names)
+    #exit()
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        for i, repo_name in enumerate(repo_names):
+            #print(f'crawling {i+1}/{len(users)}...')
+            executor.submit(insert_repo_detail, repo_name, mode)
+
+def insert_repo_detail(repo_name, mode='token'):
+    repo_detail = get_repo_detail(repo_name, mode)
+    print(f"finish {repo_name} update to db")
+    update_one('top1000_repos_detail', {'name': repo_detail['name']}, repo_detail)
+
+
+
 if __name__ == '__main__':
     #repos = get_user_starred_repo('ysam12345')
     '''
@@ -235,4 +293,6 @@ if __name__ == '__main__':
     #insert_repos_to_db(repos)
     #concurrent_crawl_repo_of_users(300, 'proxy')
     #crawl_top_users()
-    concurrent_crawl_repo_of_users(1, 'token')
+    #concurrent_crawl_repo_of_users(1, 'token')
+
+    concurrent_crawl_top1000_repo_details(300, mode='proxy')
